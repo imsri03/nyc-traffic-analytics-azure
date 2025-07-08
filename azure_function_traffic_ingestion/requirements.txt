@@ -3,5 +3,5 @@
 # Manually managing azure-functions-worker may cause unexpected issues
 
 azure-functions
-azure-storage-file-datalake
 requests
+azure-storage-file-datalake
