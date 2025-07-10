@@ -1,63 +1,42 @@
 import logging
-import azure.functions as func
+import os
 import requests
-import json
-from datetime import datetime
+import datetime
 from azure.storage.filedatalake import DataLakeServiceClient
-
-# Set your TomTom API Key (move to environment variable or key vault in production)
-TOMTOM_API_KEY = "Ksk3MaUCyi1hGpz9PUMpFo4vMxL8xkN0"  # 🔒 Replace with secure config if needed
-
-# Your ADLS Gen2 config
-STORAGE_ACCOUNT_NAME = "nyctrafficanalyticsadls"
-FILE_SYSTEM_NAME = "trafficrawdata-bronze"
-DIRECTORY_NAME = "trafficdata"
-
-# Get connection string from local.settings.json for local dev or from App Settings in Azure
-from os import getenv
-STORAGE_CONNECTION_STRING = getenv("AzureWebJobsStorage")
-
-
-def get_tomtom_traffic_data():
-    url = f"https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json"
-    params = {
-        "point": "40.7580,-73.9855",  # Times Square coordinates
-        "key": TOMTOM_API_KEY
-    }
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    return response.json()
-
-
-def upload_to_adls(data: dict):
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
-    file_name = f"traffic_{timestamp}.json"
-
-    # Authenticate to ADLS
-    service_client = DataLakeServiceClient.from_connection_string(STORAGE_CONNECTION_STRING)
-    file_system_client = service_client.get_file_system_client(file_system=FILE_SYSTEM_NAME)
-    
-    # Create directory if not exists
-    directory_client = file_system_client.get_directory_client(DIRECTORY_NAME)
-    try:
-        directory_client.create_directory()
-    except Exception:
-        pass  # Already exists
-
-    # Create and upload file
-    file_client = directory_client.create_file(file_name)
-    file_content = json.dumps(data, indent=2)
-    file_client.append_data(data=file_content, offset=0, length=len(file_content))
-    file_client.flush_data(len(file_content))
-
+import azure.functions as func
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("Traffic ingestion function triggered.")
+    logging.info('🔄 NYC Traffic ingestion triggered.')
+
+    # ✅ Get environment variables
+    api_key = os.environ.get("TOMTOM_API_KEY")
+    connection_string = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+
+    if not api_key or not connection_string:
+        return func.HttpResponse("❌ API Key or Connection String missing from environment variables.", status_code=500)
+
+    # ✅ Location: 10-mile radius around Brooklyn Pizza Shop
+    lat, lon = 40.6782, -73.9442
+    url = f"https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?point={lat},{lon}&unit=KMPH&key={api_key}"
 
     try:
-        traffic_data = get_tomtom_traffic_data()
-        upload_to_adls(traffic_data)
-        return func.HttpResponse("✅ Traffic data successfully ingested to ADLS.", status_code=200)
+        response = requests.get(url)
+        data = response.json()
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"traffic_{timestamp}.json"
+
+        # ✅ Upload to ADLS Gen2
+        service_client = DataLakeServiceClient.from_connection_string(connection_string)
+        file_system_client = service_client.get_file_system_client(file_system="trafficrawdata-bronze")
+        directory_client = file_system_client.get_directory_client("ingested")
+
+        file_client = directory_client.create_file(filename)
+        file_client.append_data(data=str(data), offset=0, length=len(str(data)))
+        file_client.flush_data(len(str(data)))
+
+        logging.info(f"✅ Traffic data saved as {filename}")
+        return func.HttpResponse(f"✅ Traffic data saved as {filename}", status_code=200)
+
     except Exception as e:
         logging.error(f"❌ Error: {str(e)}")
-        return func.HttpResponse(f"❌ Failed: {str(e)}", status_code=500)
+        return func.HttpResponse(f"❌ Error: {str(e)}", status_code=500)
